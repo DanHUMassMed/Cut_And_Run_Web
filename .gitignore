@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+frontend/node_modules/
+frontend/.vite/
+# Note: backend/static/ is intentionally tracked in git for single-port Python deployment
