@@ -8,10 +8,13 @@ import {
   CardHeader,
   Checkbox,
   Chip,
+  CircularProgress,
   Collapse,
   Divider,
   FormControlLabel,
   Grid2 as Grid,
+  IconButton,
+  InputAdornment,
   LinearProgress,
   Paper,
   Stack,
@@ -22,6 +25,8 @@ import {
   TableHead,
   TableRow,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
 } from "@mui/material";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
@@ -34,9 +39,16 @@ import DeleteSweepIcon from "@mui/icons-material/DeleteSweep";
 import TerminalIcon from "@mui/icons-material/Terminal";
 import ExpandMoreIcon from "@mui/icons-material/ExpandMore";
 import ExpandLessIcon from "@mui/icons-material/ExpandLess";
+import SearchIcon from "@mui/icons-material/Search";
+import CloseIcon from "@mui/icons-material/Close";
+import ArrowDownwardIcon from "@mui/icons-material/ArrowDownward";
 import { api } from "../../api/client";
 import type { PipelineStreamState } from "../../hooks/usePipelineStream";
 import type { PreflightResponse } from "../../types/api";
+import { CodeEditor, CodeViewer } from "../../components/common/CodeSurface";
+import { EmptyState } from "../../components/common/EmptyState";
+import { PageHeader } from "../../components/common/PageHeader";
+import { MONOSPACE_FONT_FAMILY } from "../../theme/theme";
 
 export interface PipelinePageProps {
   projectPath: string;
@@ -44,7 +56,9 @@ export interface PipelinePageProps {
   onNotify: (message: string, severity?: "success" | "error" | "info" | "warning") => void;
 }
 
-function formatElapsed(seconds: number): string {
+type TaskStatusFilter = "all" | "running" | "failed" | "completed" | "cached";
+
+export function formatElapsed(seconds: number): string {
   const hrs = Math.floor(seconds / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
   const secs = seconds % 60;
@@ -74,7 +88,7 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
   const [runShContent, setRunShContent] = useState<string>("");
   const [savedRunSh, setSavedRunSh] = useState<string>("");
   const [runShPath, setRunShPath] = useState<string>("");
-  const [scriptExpanded, setScriptExpanded] = useState<boolean>(true);
+  const [scriptExpanded, setScriptExpanded] = useState<boolean>(false);
   const [savingScript, setSavingScript] = useState<boolean>(false);
 
   const [resumeFlag, setResumeFlag] = useState<boolean>(true);
@@ -83,9 +97,14 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
   const [launching, setLaunching] = useState<boolean>(false);
   const [stopping, setStopping] = useState<boolean>(false);
 
+  const [taskStatusFilter, setTaskStatusFilter] = useState<TaskStatusFilter>("all");
+  const [taskSearch, setTaskSearch] = useState<string>("");
+
   const [logFilter, setLogFilter] = useState<string>("");
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
-  const logContainerRef = useRef<HTMLDivElement | null>(null);
+  const logContainerRef = useRef<HTMLPreElement | null>(null);
+
+  const isRunning = stream.status === "running";
 
   const loadRunScript = async () => {
     try {
@@ -103,7 +122,39 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
     setPreflight(null);
   }, [projectPath]);
 
+  useEffect(() => {
+    if (isRunning) {
+      setScriptExpanded(false);
+    }
+  }, [isRunning]);
+
   const isScriptDirty = runShContent !== savedRunSh;
+
+  const filteredTasks = useMemo(() => {
+    const q = taskSearch.trim().toLowerCase();
+    return stream.tasks.filter((task) => {
+      const upperStatus = task.status.toUpperCase();
+      if (taskStatusFilter === "running" && upperStatus !== "RUNNING" && upperStatus !== "SUBMITTED") {
+        return false;
+      }
+      if (taskStatusFilter === "failed" && upperStatus !== "FAILED" && upperStatus !== "ABORTED") {
+        return false;
+      }
+      if (taskStatusFilter === "completed" && upperStatus !== "COMPLETED") {
+        return false;
+      }
+      if (taskStatusFilter === "cached" && upperStatus !== "CACHED") {
+        return false;
+      }
+      if (q) {
+        const proc = (task.process_short || task.process || "").toLowerCase();
+        const tag = (task.tag || "").toLowerCase();
+        const hash = (task.hash || task.task_id || "").toLowerCase();
+        return proc.includes(q) || tag.includes(q) || hash.includes(q);
+      }
+      return true;
+    });
+  }, [stream.tasks, taskStatusFilter, taskSearch]);
 
   const filteredLogs = useMemo(() => {
     if (!logFilter.trim()) return stream.logs;
@@ -111,9 +162,15 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
     return stream.logs.filter((line) => line.toLowerCase().includes(q));
   }, [stream.logs, logFilter]);
 
-  useEffect(() => {
-    if (autoScroll && logContainerRef.current) {
+  const scrollToBottom = () => {
+    if (logContainerRef.current) {
       logContainerRef.current.scrollTop = logContainerRef.current.scrollHeight;
+    }
+  };
+
+  useEffect(() => {
+    if (autoScroll) {
+      scrollToBottom();
     }
   }, [filteredLogs, autoScroll]);
 
@@ -207,93 +264,104 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
     }
   };
 
-  const isRunning = stream.status === "running";
+  const isIndeterminate = isRunning && stream.stats.total === 0;
+  const progressBarColor: "primary" | "success" | "error" =
+    stream.status === "completed"
+      ? "success"
+      : stream.status === "failed"
+        ? "error"
+        : "primary";
 
   return (
     <Stack spacing={3}>
-      {/* Top Launch & Control Bar */}
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 2,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: 2,
-        }}
-      >
-        <Stack direction="row" spacing={2} alignItems="center" flexWrap="wrap">
-          <Box>
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <Typography variant="h6">Pipeline Runner &amp; Live Monitor</Typography>
-              <Chip
-                label={stream.status.toUpperCase()}
-                color={statusChipColor(stream.status)}
-                size="small"
-              />
-              {stream.runName && (
-                <Chip label={`Run: ${stream.runName}`} size="small" variant="outlined" />
-              )}
-              <Chip
-                label={`Elapsed: ${formatElapsed(stream.elapsedSeconds)}`}
-                size="small"
-                variant="outlined"
-              />
-            </Stack>
-            <Typography variant="caption" color="text.secondary">
-              Script: <code>{runShPath || `${projectPath}/run.sh`}</code>
-            </Typography>
-          </Box>
-        </Stack>
-
-        <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
-          <FormControlLabel
-            control={
-              <Checkbox
-                size="small"
-                checked={resumeFlag}
-                disabled={isRunning}
-                onChange={(e) => setResumeFlag(e.target.checked)}
-              />
-            }
-            label={<Typography variant="body2">Use Nextflow <code>-resume</code> cache</Typography>}
-          />
-          <Button
-            variant="outlined"
-            startIcon={<FactCheckIcon />}
-            disabled={checkingPreflight}
-            onClick={() => void handleRunPreflight()}
-          >
-            {checkingPreflight ? "Checking..." : "Pre-Flight Check"}
-          </Button>
-          {!isRunning ? (
+      <PageHeader
+        title="Pipeline Runner & Live Monitor"
+        badges={
+          <>
+            <Chip
+              label={stream.status.toUpperCase()}
+              color={statusChipColor(stream.status)}
+              size="small"
+            />
+            {stream.runName && (
+              <Chip label={`Run: ${stream.runName}`} size="small" variant="outlined" />
+            )}
+            <Chip
+              label={`Elapsed: ${formatElapsed(stream.elapsedSeconds)}`}
+              size="small"
+              variant="outlined"
+              sx={{ fontVariantNumeric: "tabular-nums" }}
+            />
+          </>
+        }
+        subtitle={
+          <>
+            Script: <code>{runShPath || `${projectPath}/run.sh`}</code>
+          </>
+        }
+        actions={
+          <>
+            <FormControlLabel
+              control={
+                <Checkbox
+                  size="small"
+                  checked={resumeFlag}
+                  disabled={isRunning}
+                  onChange={(e) => setResumeFlag(e.target.checked)}
+                />
+              }
+              label={
+                <Typography variant="body2">
+                  Use Nextflow <code>-resume</code> cache
+                </Typography>
+              }
+            />
             <Button
-              variant="contained"
-              color="success"
-              startIcon={<PlayArrowIcon />}
-              disabled={launching}
-              onClick={() => void handleStartPipeline()}
+              variant="outlined"
+              startIcon={
+                checkingPreflight ? (
+                  <CircularProgress size={16} color="inherit" />
+                ) : (
+                  <FactCheckIcon />
+                )
+              }
+              disabled={checkingPreflight}
+              onClick={() => void handleRunPreflight()}
             >
-              {launching ? "Starting..." : "Launch Pipeline"}
+              {checkingPreflight ? "Checking..." : "Pre-Flight Check"}
             </Button>
-          ) : (
-            <Button
-              variant="contained"
-              color="error"
-              startIcon={<StopIcon />}
-              disabled={stopping}
-              onClick={() => void handleStopPipeline()}
-            >
-              {stopping ? "Stopping..." : "Stop Pipeline"}
-            </Button>
-          )}
-        </Stack>
-      </Paper>
+            {!isRunning ? (
+              <Button
+                variant="contained"
+                color="success"
+                startIcon={
+                  launching ? <CircularProgress size={16} color="inherit" /> : <PlayArrowIcon />
+                }
+                disabled={launching}
+                onClick={() => void handleStartPipeline()}
+              >
+                {launching ? "Starting..." : "Launch Pipeline"}
+              </Button>
+            ) : (
+              <Button
+                variant="contained"
+                color="error"
+                startIcon={
+                  stopping ? <CircularProgress size={16} color="inherit" /> : <StopIcon />
+                }
+                disabled={stopping}
+                onClick={() => void handleStopPipeline()}
+              >
+                {stopping ? "Stopping..." : "Stop Pipeline"}
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* Pre-Flight Results Banner */}
       {preflight && (
-        <Card variant="outlined">
+        <Card>
           <CardHeader
             title={
               <Stack direction="row" spacing={1.5} alignItems="center">
@@ -333,93 +401,31 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
         </Card>
       )}
 
-      {/* 1. run.sh Script Editor Card */}
-      <Card variant="outlined">
-        <CardHeader
-          title={
-            <Stack direction="row" spacing={1.5} alignItems="center">
-              <TerminalIcon color="primary" fontSize="small" />
-              <Typography variant="subtitle1">Manage Launch Script (run.sh)</Typography>
-              <Chip
-                label={isScriptDirty ? "Unsaved Edits" : "Saved"}
-                size="small"
-                color={isScriptDirty ? "warning" : "success"}
-                variant={isScriptDirty ? "filled" : "outlined"}
-              />
-            </Stack>
-          }
-          action={
-            <Stack direction="row" spacing={1}>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<RestartAltIcon />}
-                disabled={savingScript || isRunning}
-                onClick={() => void handleResetRunScript()}
-              >
-                Reset to Template
-              </Button>
-              <Button
-                size="small"
-                variant="contained"
-                startIcon={<SaveIcon />}
-                disabled={savingScript || !isScriptDirty}
-                onClick={() => void handleSaveRunScript()}
-              >
-                Save run.sh
-              </Button>
-              <Button
-                size="small"
-                color="inherit"
-                endIcon={scriptExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
-                onClick={() => setScriptExpanded((prev) => !prev)}
-              >
-                {scriptExpanded ? "Hide" : "Show"}
-              </Button>
-            </Stack>
-          }
-        />
-        <Collapse in={scriptExpanded}>
-          <Divider />
-          <CardContent>
-            <TextField
-              multiline
-              minRows={8}
-              maxRows={18}
-              fullWidth
-              value={runShContent}
-              onChange={(e) => setRunShContent(e.target.value)}
-              slotProps={{
-                input: {
-                  sx: {
-                    fontFamily: '"JetBrains Mono", monospace',
-                    fontSize: "0.84rem",
-                    bgcolor: "#0f172a",
-                    color: "#f8fafc",
-                  },
-                },
-              }}
-            />
-          </CardContent>
-        </Collapse>
-      </Card>
-
-      {/* 2. Progress KPIs & Progress Bar */}
-      <Card variant="outlined">
+      {/* 1. Progress KPIs & Progress Bar (Prominent below launch bar) */}
+      <Card>
         <CardContent>
           <Stack spacing={2}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
-              <Typography variant="subtitle2">
+              <Typography variant="subtitle2" sx={{ fontVariantNumeric: "tabular-nums" }}>
                 Workflow Execution Progress ({stream.stats.percent}%)
               </Typography>
-              <Typography variant="caption" color="text.secondary">
+              <Typography
+                variant="caption"
+                color="text.secondary"
+                sx={{ fontVariantNumeric: "tabular-nums" }}
+              >
                 {stream.stats.completed} / {stream.stats.total} tasks finished ({stream.stats.cached}{" "}
                 cached)
               </Typography>
             </Stack>
             <LinearProgress
-              variant="determinate"
-              value={Math.min(100, Math.max(0, stream.stats.percent))}
+              variant={isIndeterminate ? "indeterminate" : "determinate"}
+              color={progressBarColor}
+              value={
+                isIndeterminate
+                  ? undefined
+                  : Math.min(100, Math.max(0, stream.stats.percent))
+              }
               sx={{ height: 10, borderRadius: 5 }}
             />
             <Grid container spacing={2}>
@@ -436,7 +442,14 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
                     <Typography variant="caption" color="text.secondary">
                       {metric.label}
                     </Typography>
-                    <Typography variant="h5" sx={{ color: metric.color, mt: 0.5 }}>
+                    <Typography
+                      variant="h5"
+                      sx={{
+                        color: metric.color,
+                        mt: 0.5,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
                       {metric.value}
                     </Typography>
                   </Paper>
@@ -447,23 +460,150 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
         </CardContent>
       </Card>
 
-      {/* 3. Nextflow Task Table */}
-      <Card variant="outlined">
+      {/* 2. run.sh Script Editor Card (Collapsed by default) */}
+      <Card>
         <CardHeader
-          title={`Process Execution Table (${stream.tasks.length})`}
+          title={
+            <Stack direction="row" spacing={1.5} alignItems="center">
+              <TerminalIcon color="primary" fontSize="small" />
+              <Typography variant="subtitle1">Launch Script (run.sh)</Typography>
+              <Chip
+                label={isScriptDirty ? "Unsaved Edits" : "Saved"}
+                size="small"
+                color={isScriptDirty ? "warning" : "success"}
+                variant={isScriptDirty ? "filled" : "outlined"}
+              />
+            </Stack>
+          }
+          action={
+            <Stack direction="row" spacing={1}>
+              {scriptExpanded && (
+                <>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RestartAltIcon />}
+                    disabled={savingScript || isRunning}
+                    onClick={() => void handleResetRunScript()}
+                  >
+                    Reset to Template
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="contained"
+                    startIcon={
+                      savingScript ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />
+                    }
+                    disabled={savingScript || !isScriptDirty}
+                    onClick={() => void handleSaveRunScript()}
+                  >
+                    Save run.sh
+                  </Button>
+                </>
+              )}
+              <Button
+                size="small"
+                color="inherit"
+                endIcon={scriptExpanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+                onClick={() => setScriptExpanded((prev) => !prev)}
+              >
+                {scriptExpanded ? "Hide Script" : "Edit run.sh"}
+              </Button>
+            </Stack>
+          }
+        />
+        <Collapse in={scriptExpanded}>
+          <Divider />
+          <CardContent>
+            <CodeEditor
+              minRows={8}
+              maxRows={18}
+              value={runShContent}
+              onChange={(e) => setRunShContent(e.target.value)}
+            />
+          </CardContent>
+        </Collapse>
+      </Card>
+
+      {/* 3. Nextflow Task Table */}
+      <Card>
+        <CardHeader
+          title={`Process Execution Table (${filteredTasks.length} / ${stream.tasks.length})`}
           subheader="Real-time task telemetry via Nextflow weblog and execution trace"
+          action={
+            stream.tasks.length > 0 ? (
+              <Stack direction="row" spacing={1.5} alignItems="center" flexWrap="wrap">
+                <ToggleButtonGroup
+                  size="small"
+                  exclusive
+                  color="primary"
+                  value={taskStatusFilter}
+                  onChange={(_, val: TaskStatusFilter | null) => {
+                    if (val) setTaskStatusFilter(val);
+                  }}
+                  aria-label="Filter tasks by status"
+                >
+                  <ToggleButton value="all">All</ToggleButton>
+                  <ToggleButton value="running">Running</ToggleButton>
+                  <ToggleButton value="failed">Failed</ToggleButton>
+                  <ToggleButton value="completed">Completed</ToggleButton>
+                  <ToggleButton value="cached">Cached</ToggleButton>
+                </ToggleButtonGroup>
+                <TextField
+                  placeholder="Search process or tag..."
+                  value={taskSearch}
+                  onChange={(e) => setTaskSearch(e.target.value)}
+                  sx={{ width: 210 }}
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon fontSize="small" color="action" />
+                        </InputAdornment>
+                      ),
+                      endAdornment: taskSearch ? (
+                        <InputAdornment position="end">
+                          <IconButton
+                            size="small"
+                            aria-label="Clear task search"
+                            onClick={() => setTaskSearch("")}
+                          >
+                            <CloseIcon fontSize="small" />
+                          </IconButton>
+                        </InputAdornment>
+                      ) : undefined,
+                    },
+                  }}
+                />
+              </Stack>
+            ) : undefined
+          }
         />
         <Divider />
         <CardContent sx={{ p: 0 }}>
           {stream.tasks.length === 0 ? (
-            <Box sx={{ p: 3, textAlign: "center" }}>
-              <Typography variant="body2" color="text.secondary">
-                No tasks recorded for the current session yet. Launch the pipeline to monitor
-                processes in real time.
-              </Typography>
-            </Box>
+            <EmptyState
+              title="No tasks recorded for the current session yet"
+              description="Launch the pipeline to monitor Nextflow processes in real time."
+            />
+          ) : filteredTasks.length === 0 ? (
+            <EmptyState
+              title="No tasks match the current filter"
+              action={
+                <Button
+                  size="small"
+                  variant="outlined"
+                  onClick={() => {
+                    setTaskStatusFilter("all");
+                    setTaskSearch("");
+                  }}
+                >
+                  Reset Task Filters
+                </Button>
+              }
+            />
           ) : (
-            <TableContainer sx={{ maxHeight: 340 }}>
+            <TableContainer sx={{ maxHeight: 360 }}>
               <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
@@ -478,12 +618,19 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {stream.tasks.map((task) => (
+                  {filteredTasks.map((task) => (
                     <TableRow key={task.key} hover>
-                      <TableCell sx={{ fontFamily: '"JetBrains Mono", monospace', fontSize: "0.78rem" }}>
+                      <TableCell
+                        sx={{
+                          fontFamily: MONOSPACE_FONT_FAMILY,
+                          fontSize: "0.78rem",
+                        }}
+                      >
                         {task.hash || task.task_id}
                       </TableCell>
-                      <TableCell sx={{ fontWeight: 600 }}>{task.process_short || task.process}</TableCell>
+                      <TableCell sx={{ fontWeight: 600 }}>
+                        {task.process_short || task.process}
+                      </TableCell>
                       <TableCell>{task.tag || "—"}</TableCell>
                       <TableCell>
                         <Chip
@@ -492,16 +639,20 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
                           color={statusChipColor(task.status)}
                         />
                       </TableCell>
-                      <TableCell>{task.exit !== null ? task.exit : "—"}</TableCell>
-                      <TableCell>
+                      <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
+                        {task.exit !== null ? task.exit : "—"}
+                      </TableCell>
+                      <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
                         {task.duration ||
                           task.realtime_fmt ||
                           (task.realtime ? `${(Number(task.realtime) / 1000).toFixed(1)}s` : "—")}
                       </TableCell>
-                      <TableCell>
+                      <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
                         {task.cpu_percent ? `${task.cpu_percent.toFixed(1)}%` : "—"}
                       </TableCell>
-                      <TableCell>{task.peak_rss || "—"}</TableCell>
+                      <TableCell sx={{ fontVariantNumeric: "tabular-nums" }}>
+                        {task.peak_rss || "—"}
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -512,17 +663,36 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
       </Card>
 
       {/* 4. Live Console Output */}
-      <Card variant="outlined">
+      <Card>
         <CardHeader
           title="Nextflow Live Output Console"
           action={
-            <Stack direction="row" spacing={1} alignItems="center">
+            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <TextField
-                size="small"
                 placeholder="Filter logs..."
                 value={logFilter}
                 onChange={(e) => setLogFilter(e.target.value)}
-                sx={{ width: 200 }}
+                sx={{ width: 220 }}
+                slotProps={{
+                  input: {
+                    startAdornment: (
+                      <InputAdornment position="start">
+                        <SearchIcon fontSize="small" color="action" />
+                      </InputAdornment>
+                    ),
+                    endAdornment: logFilter ? (
+                      <InputAdornment position="end">
+                        <IconButton
+                          size="small"
+                          aria-label="Clear log filter"
+                          onClick={() => setLogFilter("")}
+                        >
+                          <CloseIcon fontSize="small" />
+                        </IconButton>
+                      </InputAdornment>
+                    ) : undefined,
+                  },
+                }}
               />
               <FormControlLabel
                 control={
@@ -534,6 +704,19 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
                 }
                 label={<Typography variant="caption">Auto-scroll</Typography>}
               />
+              {!autoScroll && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<ArrowDownwardIcon fontSize="small" />}
+                  onClick={() => {
+                    setAutoScroll(true);
+                    scrollToBottom();
+                  }}
+                >
+                  Jump to Bottom
+                </Button>
+              )}
               <Button
                 size="small"
                 variant="outlined"
@@ -556,26 +739,17 @@ export const PipelinePage: React.FC<PipelinePageProps> = ({
         />
         <Divider />
         <CardContent sx={{ p: 0 }}>
-          <Box
-            ref={logContainerRef}
-            component="pre"
-            sx={{
-              m: 0,
-              p: 2,
-              height: 380,
-              overflowY: "auto",
-              bgcolor: "#0f172a",
-              color: "#e2e8f0",
-              fontFamily: '"JetBrains Mono", monospace',
-              fontSize: "0.8rem",
-              lineHeight: 1.5,
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            {filteredLogs.length === 0
-              ? "Waiting for Nextflow console output..."
-              : filteredLogs.join("")}
+          <Box sx={{ p: 0 }}>
+            <CodeViewer
+              ref={logContainerRef}
+              height={380}
+              wrap
+              sx={{ borderRadius: 0 }}
+            >
+              {filteredLogs.length === 0
+                ? "Waiting for Nextflow console output..."
+                : filteredLogs.join("")}
+            </CodeViewer>
           </Box>
         </CardContent>
       </Card>

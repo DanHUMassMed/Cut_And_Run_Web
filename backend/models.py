@@ -457,6 +457,36 @@ class ProjectCreatePayload(BaseModel):
         return cleaned
 
 
+class DirectoryCreatePayload(BaseModel):
+    """Payload for creating a new directory on disk from the directory browser."""
+
+    parent_dir: str
+    name: str
+
+    @field_validator("parent_dir")
+    @classmethod
+    def validate_parent_dir(cls, value: str) -> str:
+        cleaned = _reject_control_chars(value.strip(), "parent_dir")
+        if not cleaned:
+            raise ValueError("Parent directory must not be empty")
+        return cleaned
+
+    @field_validator("name")
+    @classmethod
+    def validate_folder_name(cls, value: str) -> str:
+        cleaned = _reject_control_chars(value.strip(), "name")
+        if not cleaned or cleaned in (".", "..") or "/" in cleaned or "\\" in cleaned:
+            raise ValueError("Folder name must be a valid single directory name")
+        return cleaned
+
+
+class NativeFolderPickPayload(BaseModel):
+    """Payload for invoking the native macOS Finder folder selection dialog."""
+
+    prompt: str = "Select Directory"
+    initial_path: str | None = None
+
+
 class TemplateMetadata(BaseModel):
     """Summary metadata for a project template stored in ~/.config/cutandrun_web/templates."""
 

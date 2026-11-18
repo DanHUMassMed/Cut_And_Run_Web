@@ -375,6 +375,19 @@ def test_templates_and_project_creation_flow(tmp_path: Path) -> None:
         assert client.delete("/api/templates/default_ce11").status_code == 400
         assert client.delete("/api/templates/custom_worm_template").status_code == 200
 
+        # 7. Directory listing shortcuts & folder creation
+        dirs_resp = client.get("/api/projects/list-dirs", params={"path": str(tmp_path)})
+        assert dirs_resp.status_code == 200
+        dirs_data = dirs_resp.json()
+        assert any(s["label"] == "Projects Root" for s in dirs_data["shortcuts"])
+
+        mkdir_resp = client.post(
+            "/api/projects/mkdir",
+            json={"parent_dir": str(tmp_path), "name": "New_Folder_2026"},
+        )
+        assert mkdir_resp.status_code == 200
+        assert (tmp_path / "New_Folder_2026").is_dir()
+
 
 def test_http_endpoints_config_samplesheet_preflight_and_results_sandbox(tmp_path: Path) -> None:
     settings = make_test_settings(tmp_path)
@@ -404,13 +417,20 @@ def test_http_endpoints_config_samplesheet_preflight_and_results_sandbox(tmp_pat
 
     cfg_resp = client.get("/api/config")
     assert cfg_resp.status_code == 200
+    assert cfg_resp.json()["bigwig_tools"] == {
+        "HOMER": "07_homer/ucsc_bw",
+        "deepTools": "08_deeptools/bw",
+    }
+    assert settings.bigwig_tools_path.is_file()
     cfg = cfg_resp.json()["config"]
     cfg["input_dir"] = str(input_dir)
+    cfg["active_bigwig_dir"] = "HOMER"
     cfg["resource_cpus"] = 16
     cfg["resource_memory"] = "64.GB"
     cfg["resource_time"] = "24.h"
     put_resp = client.put("/api/config", json=cfg)
     assert put_resp.status_code == 200
+    assert put_resp.json()["config"]["active_bigwig_dir"] == "07_homer/ucsc_bw"
     assert settings.config_path.with_suffix(".config.bak").exists()
 
     patch_resp = client.patch(
@@ -419,10 +439,6 @@ def test_http_endpoints_config_samplesheet_preflight_and_results_sandbox(tmp_pat
     )
     assert patch_resp.status_code == 200
     assert len(patch_resp.json()["diff_contrasts"]) == 1
-
-    disc_resp = client.post("/api/samplesheet/discover")
-    assert disc_resp.status_code == 200
-    assert disc_resp.json()["discovered"] == ["sample_A"]
 
     ss_put = client.put(
         "/api/samplesheet",
@@ -535,6 +551,10 @@ def test_built_react_spa_served_from_single_port(tmp_path: Path) -> None:
     root_resp = client.get("/")
     assert root_resp.status_code == 200
     assert '<div id="root"></div>' in root_resp.text
+
+    admin_resp = client.get("/admin")
+    assert admin_resp.status_code == 200
+    assert '<div id="root"></div>' in admin_resp.text
 
     # Asset bundle under /assets/... is served directly by the single-port app
     assets = list((real_static_dir / "assets").glob("*.js"))

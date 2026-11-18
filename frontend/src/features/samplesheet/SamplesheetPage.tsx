@@ -1,15 +1,22 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Card,
   CardContent,
   Chip,
   CircularProgress,
+  Divider,
   IconButton,
+  InputAdornment,
+  List,
+  ListItem,
+  ListItemText,
   MenuItem,
   Paper,
+  Skeleton,
   Stack,
   Table,
   TableBody,
@@ -21,29 +28,189 @@ import {
   Tooltip,
   Typography,
 } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import SaveIcon from "@mui/icons-material/Save";
 import AddIcon from "@mui/icons-material/Add";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
-import TravelExploreIcon from "@mui/icons-material/TravelExplore";
 import RestoreIcon from "@mui/icons-material/Restore";
+import SearchIcon from "@mui/icons-material/Search";
+import CloseIcon from "@mui/icons-material/Close";
+import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import { api } from "../../api/client";
 import type { SamplesheetRow } from "../../types/api";
+import { PageHeader } from "../../components/common/PageHeader";
 
 export interface SamplesheetPageProps {
   projectPath: string;
   onNotify: (message: string, severity?: "success" | "error" | "info" | "warning") => void;
+  onDirtyChange?: (isDirty: boolean) => void;
+}
+
+export interface RowValidationError {
+  sampleIdError?: string;
+  controlIdError?: string;
+}
+
+export interface SamplesheetValidationResult {
+  warnings: string[];
+  rowErrors: Record<number, RowValidationError>;
+}
+
+const CSV_FIELDS: Array<keyof SamplesheetRow> = [
+  "sample_id",
+  "sample_name",
+  "condition",
+  "target",
+  "peak_mode",
+  "replicate",
+  "control_id",
+];
+
+function splitCsvLine(line: string): string[] {
+  const cells: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      cells.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  cells.push(current.trim());
+  return cells;
+}
+
+export function parseSamplesheetCsv(csvText: string): SamplesheetRow[] {
+  const lines = csvText
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0 && !l.startsWith("#"));
+
+  if (lines.length === 0) return [];
+
+  const firstCells = splitCsvLine(lines[0]);
+  const lowerFirst = firstCells.map((c) => c.toLowerCase());
+  const hasHeader = lowerFirst.includes("sample_id") || lowerFirst.includes("sample_name");
+
+  const headerIndexMap: Record<keyof SamplesheetRow, number> = {
+    sample_id: 0,
+    sample_name: 1,
+    condition: 2,
+    target: 3,
+    peak_mode: 4,
+    replicate: 5,
+    control_id: 6,
+  };
+
+  if (hasHeader) {
+    for (const field of CSV_FIELDS) {
+      const idx = lowerFirst.indexOf(field);
+      if (idx !== -1) {
+        headerIndexMap[field] = idx;
+      }
+    }
+  }
+
+  const startLine = hasHeader ? 1 : 0;
+  const rows: SamplesheetRow[] = [];
+
+  for (let i = startLine; i < lines.length; i += 1) {
+    const cells = splitCsvLine(lines[i]);
+    if (cells.every((c) => c === "")) continue;
+    rows.push({
+      sample_id: cells[headerIndexMap.sample_id] ?? "",
+      sample_name: cells[headerIndexMap.sample_name] ?? "",
+      condition: cells[headerIndexMap.condition] ?? "",
+      target: cells[headerIndexMap.target] ?? "",
+      peak_mode: cells[headerIndexMap.peak_mode] ?? "",
+      replicate: cells[headerIndexMap.replicate] ?? "1",
+      control_id: cells[headerIndexMap.control_id] ?? "",
+    });
+  }
+
+  return rows;
+}
+
+export function validateSamplesheetRows(rows: SamplesheetRow[]): SamplesheetValidationResult {
+  const warnings: string[] = [];
+  const rowErrors: Record<number, RowValidationError> = {};
+  const idCounts = new Map<string, number>();
+  const allIds = new Set<string>();
+
+  for (const row of rows) {
+    const sid = row.sample_id.trim();
+    if (sid) {
+      allIds.add(sid);
+      idCounts.set(sid, (idCounts.get(sid) ?? 0) + 1);
+    }
+  }
+
+  const reportedDuplicates = new Set<string>();
+
+  rows.forEach((row, index) => {
+    const sid = row.sample_id.trim();
+    const ctrl = row.control_id.trim();
+    const entry: RowValidationError = {};
+
+    if (!sid) {
+      const msg = `Row ${index + 1}: sample_id is empty.`;
+      warnings.push(msg);
+      entry.sampleIdError = "sample_id is required";
+    } else if ((idCounts.get(sid) ?? 0) > 1) {
+      entry.sampleIdError = `Duplicate sample_id "${sid}"`;
+      if (!reportedDuplicates.has(sid)) {
+        warnings.push(`Row ${index + 1}: duplicate sample_id "${sid}".`);
+        reportedDuplicates.add(sid);
+      }
+    }
+
+    if (ctrl && !allIds.has(ctrl)) {
+      const msg = `Row ${index + 1} (${sid || "unnamed"}): control_id "${ctrl}" does not match any sample_id in the table.`;
+      warnings.push(msg);
+      entry.controlIdError = `"${ctrl}" does not match any sample_id`;
+    }
+
+    if (entry.sampleIdError || entry.controlIdError) {
+      rowErrors[index] = entry;
+    }
+  });
+
+  return { warnings, rowErrors };
 }
 
 export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
   projectPath,
   onNotify,
+  onDirtyChange,
 }) => {
   const [rows, setRows] = useState<SamplesheetRow[]>([]);
+  const [rowKeys, setRowKeys] = useState<string[]>([]);
   const [savedRows, setSavedRows] = useState<SamplesheetRow[]>([]);
+  const [searchFilter, setSearchFilter] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
-  const [discovering, setDiscovering] = useState<boolean>(false);
+  const [isDragOver, setIsDragOver] = useState<boolean>(false);
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const keyCounterRef = useRef<number>(1);
+  const nextRowKey = () => {
+    const k = `sample-row-${keyCounterRef.current}`;
+    keyCounterRef.current += 1;
+    return k;
+  };
 
   const loadSamplesheet = async () => {
     setLoading(true);
@@ -51,6 +218,7 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
       const res = await api.getSamplesheet();
       setRows(res.rows);
       setSavedRows(res.rows);
+      setRowKeys(res.rows.map(() => nextRowKey()));
     } catch (err) {
       onNotify(
         err instanceof Error ? err.message : "Failed to load samplesheet.csv",
@@ -70,6 +238,10 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
     [rows, savedRows]
   );
 
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+  }, [isDirty, onDirtyChange]);
+
   const iggSampleIds = useMemo(() => {
     return rows
       .filter(
@@ -82,30 +254,30 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
       .filter(Boolean);
   }, [rows]);
 
-  const validationWarnings = useMemo(() => {
-    const warnings: string[] = [];
-    const seenIds = new Set<string>();
-    const allIds = new Set(rows.map((r) => r.sample_id.trim()).filter(Boolean));
+  const { warnings: validationWarnings, rowErrors } = useMemo(
+    () => validateSamplesheetRows(rows),
+    [rows]
+  );
 
-    rows.forEach((row, index) => {
-      const sid = row.sample_id.trim();
-      if (!sid) {
-        warnings.push(`Row ${index + 1}: sample_id is empty.`);
-      } else if (seenIds.has(sid)) {
-        warnings.push(`Row ${index + 1}: duplicate sample_id "${sid}".`);
-      } else {
-        seenIds.add(sid);
-      }
-
-      if (row.control_id.trim() && !allIds.has(row.control_id.trim())) {
-        warnings.push(
-          `Row ${index + 1} (${sid || "unnamed"}): control_id "${row.control_id}" does not match any sample_id in the table.`
+  const indexedFilteredRows = useMemo(() => {
+    const q = searchFilter.trim().toLowerCase();
+    return rows
+      .map((row, index) => ({
+        row,
+        index,
+        rowKey: rowKeys[index] ?? `sample-fallback-${index}`,
+      }))
+      .filter(({ row }) => {
+        if (!q) return true;
+        return (
+          row.sample_id.toLowerCase().includes(q) ||
+          row.sample_name.toLowerCase().includes(q) ||
+          row.condition.toLowerCase().includes(q) ||
+          row.target.toLowerCase().includes(q) ||
+          row.control_id.toLowerCase().includes(q)
         );
-      }
-    });
-
-    return warnings;
-  }, [rows]);
+      });
+  }, [rows, rowKeys, searchFilter]);
 
   const handleUpdateRow = (
     index: number,
@@ -118,6 +290,7 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
   };
 
   const handleAddRow = () => {
+    setRowKeys((prev) => [...prev, nextRowKey()]);
     setRows((prev) => [
       ...prev,
       {
@@ -139,6 +312,11 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
       ...source,
       sample_id: `${source.sample_id}_copy`,
     };
+    setRowKeys((prev) => [
+      ...prev.slice(0, index + 1),
+      nextRowKey(),
+      ...prev.slice(index + 1),
+    ]);
     setRows((prev) => [
       ...prev.slice(0, index + 1),
       copy,
@@ -147,51 +325,53 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
   };
 
   const handleDeleteRow = (index: number) => {
+    setRowKeys((prev) => prev.filter((_, idx) => idx !== index));
     setRows((prev) => prev.filter((_, idx) => idx !== index));
   };
 
-  const handleDiscoverBams = async () => {
-    setDiscovering(true);
+  const handleDiscard = () => {
+    setRows(savedRows);
+    setRowKeys(savedRows.map(() => nextRowKey()));
+  };
+
+  const importCsvFile = async (file: File) => {
     try {
-      const res = await api.discoverSamples();
-      if (res.error) {
-        onNotify(res.error, "warning");
+      const text = await file.text();
+      const parsed = parseSamplesheetCsv(text);
+      if (parsed.length === 0) {
+        onNotify(`No sample rows found in "${file.name}".`, "warning");
         return;
       }
-      const existingIds = new Set(rows.map((r) => r.sample_id.trim()));
-      const newRows: SamplesheetRow[] = [];
-      for (const bamStem of res.discovered) {
-        if (!existingIds.has(bamStem)) {
-          const isIgg = bamStem.toLowerCase().includes("igg");
-          const isBroad = bamStem.toLowerCase().includes("k27me3");
-          newRows.push({
-            sample_id: bamStem,
-            sample_name: bamStem,
-            condition: bamStem,
-            target: isIgg ? "IgG" : isBroad ? "H3K27me3" : "H3K4me3",
-            peak_mode: isIgg ? "" : isBroad ? "broad" : "narrow",
-            replicate: "1",
-            control_id: "",
-          });
-        }
-      }
-      if (newRows.length === 0) {
-        onNotify(
-          `Scanned ${res.discovered.length} BAM file(s); all are already in the samplesheet.`,
-          "info"
-        );
-      } else {
-        setRows((prev) => [...prev, ...newRows]);
-        onNotify(`Added ${newRows.length} discovered BAM sample(s).`, "success");
-      }
+      setRows(parsed);
+      setRowKeys(parsed.map(() => nextRowKey()));
+      onNotify(
+        `Loaded ${parsed.length} sample(s) from ${file.name}. Click "Save Samplesheet" to save.`,
+        "success"
+      );
     } catch (err) {
       onNotify(
-        err instanceof Error ? err.message : "Failed to auto-discover BAMs",
+        err instanceof Error ? err.message : "Failed to read dropped CSV file",
         "error"
       );
-    } finally {
-      setDiscovering(false);
     }
+  };
+
+  const handleDropCsv = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      void importCsvFile(file);
+    }
+  };
+
+  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      void importCsvFile(file);
+    }
+    e.target.value = "";
   };
 
   const handleSave = async () => {
@@ -212,105 +392,187 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
 
   if (loading) {
     return (
-      <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }}>
-        <CircularProgress />
+      <Stack spacing={3}>
+        <Skeleton variant="rounded" height={84} />
+        <Skeleton variant="rounded" height={420} />
       </Stack>
     );
   }
 
   return (
     <Stack spacing={3}>
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 2,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: 2,
-        }}
-      >
-        <Box>
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            <Typography variant="h6">Samplesheet Management</Typography>
-            <Chip label={`${rows.length} samples`} size="small" color="primary" variant="outlined" />
+      <PageHeader
+        title="Samplesheet Management"
+        badges={
+          <>
+            <Chip
+              label={`${rows.length} sample${rows.length === 1 ? "" : "s"}`}
+              size="small"
+              color="primary"
+              variant="outlined"
+            />
             <Chip
               label={isDirty ? "Unsaved Changes" : "Saved"}
               color={isDirty ? "warning" : "success"}
               size="small"
               variant={isDirty ? "filled" : "outlined"}
             />
-          </Stack>
-          <Typography variant="caption" color="text.secondary">
+          </>
+        }
+        subtitle={
+          <>
             Editing <code>{projectPath}/config/samplesheet.csv</code>
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={1.5}>
-          <Button
-            variant="outlined"
-            startIcon={<TravelExploreIcon />}
-            disabled={discovering}
-            onClick={() => void handleDiscoverBams()}
-          >
-            {discovering ? "Scanning..." : "Auto-Scan BAMs"}
-          </Button>
-          <Button variant="outlined" startIcon={<AddIcon />} onClick={handleAddRow}>
-            Add Sample
-          </Button>
-          <Button
-            variant="outlined"
-            color="inherit"
-            startIcon={<RestoreIcon />}
-            disabled={!isDirty || saving}
-            onClick={() => setRows(savedRows)}
-          >
-            Discard
-          </Button>
-          <Button
-            variant="contained"
-            startIcon={<SaveIcon />}
-            disabled={saving}
-            onClick={() => void handleSave()}
-          >
-            {saving ? "Saving..." : "Save Samplesheet"}
-          </Button>
-        </Stack>
-      </Paper>
+          </>
+        }
+        actions={
+          <>
+            <Button variant="outlined" startIcon={<AddIcon />} onClick={handleAddRow}>
+              Add Sample
+            </Button>
+            <Button
+              variant="outlined"
+              color="inherit"
+              startIcon={<RestoreIcon />}
+              disabled={!isDirty || saving}
+              onClick={handleDiscard}
+            >
+              Discard
+            </Button>
+            <Button
+              variant="contained"
+              startIcon={saving ? <CircularProgress size={16} color="inherit" /> : <SaveIcon />}
+              disabled={saving}
+              onClick={() => void handleSave()}
+            >
+              {saving ? "Saving..." : "Save Samplesheet"}
+            </Button>
+          </>
+        }
+      />
 
       {validationWarnings.length > 0 && (
         <Alert severity="warning">
           <Typography variant="subtitle2" gutterBottom>
-            Samplesheet Validation Notices
+            Samplesheet Validation Notices ({validationWarnings.length})
           </Typography>
-          <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
+          <List dense disablePadding>
             {validationWarnings.map((w, idx) => (
-              <li key={idx}>
-                <Typography variant="caption">{w}</Typography>
-              </li>
+              <ListItem key={idx} disableGutters sx={{ py: 0 }}>
+                <ListItemText
+                  primary={w}
+                  primaryTypographyProps={{ variant: "caption" }}
+                />
+              </ListItem>
             ))}
-          </Box>
+          </List>
         </Alert>
       )}
 
-      <Card variant="outlined">
+      <Card>
+        {rows.length > 0 && (
+          <>
+            <Box sx={{ px: 2, py: 1.5, bgcolor: "background.default" }}>
+              <Stack
+                direction="row"
+                justifyContent="space-between"
+                alignItems="center"
+                flexWrap="wrap"
+                gap={1.5}
+              >
+                <TextField
+                  placeholder="Filter samples by ID, name, condition, target..."
+                  value={searchFilter}
+                  onChange={(e) => setSearchFilter(e.target.value)}
+                  sx={{ width: { xs: "100%", sm: 360 }, bgcolor: "background.paper" }}
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon fontSize="small" color="action" />
+                        </InputAdornment>
+                      ),
+                      endAdornment: searchFilter ? (
+                        <InputAdornment position="end">
+                          <IconButton
+                            size="small"
+                            aria-label="Clear sample filter"
+                            onClick={() => setSearchFilter("")}
+                          >
+                            <CloseIcon fontSize="small" />
+                          </IconButton>
+                        </InputAdornment>
+                      ) : undefined,
+                    },
+                  }}
+                />
+                <Typography variant="caption" color="text.secondary">
+                  Showing {indexedFilteredRows.length} of {rows.length} row(s)
+                </Typography>
+              </Stack>
+            </Box>
+            <Divider />
+          </>
+        )}
+
         <CardContent sx={{ p: 0 }}>
           {rows.length === 0 ? (
-            <Box sx={{ p: 4, textAlign: "center" }}>
-              <Typography variant="body1" gutterBottom>
-                No samples in <code>samplesheet.csv</code> yet.
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Click &ldquo;Auto-Scan BAMs&rdquo; to populate samples from{" "}
-                <code>06_index_bam/*.bam</code> or add rows manually.
-              </Typography>
-              <Button variant="contained" startIcon={<AddIcon />} onClick={handleAddRow}>
-                Add First Sample
-              </Button>
+            <Box sx={{ p: 3 }}>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                hidden
+                onChange={handleFileInputChange}
+              />
+              <Paper
+                variant="outlined"
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragOver(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDragOver(false);
+                }}
+                onDrop={handleDropCsv}
+                onClick={() => fileInputRef.current?.click()}
+                sx={(theme) => ({
+                  py: 6,
+                  px: 3,
+                  textAlign: "center",
+                  cursor: "pointer",
+                  border: "2px dashed",
+                  borderColor: isDragOver ? "primary.main" : "divider",
+                  bgcolor: isDragOver
+                    ? alpha(theme.palette.primary.main, 0.06)
+                    : "background.default",
+                  transition: "all 0.15s ease",
+                  "&:hover": {
+                    borderColor: "primary.main",
+                    bgcolor: alpha(theme.palette.primary.main, 0.03),
+                  },
+                })}
+              >
+                <Stack spacing={1.25} alignItems="center" justifyContent="center">
+                  <UploadFileOutlinedIcon
+                    fontSize="large"
+                    color={isDragOver ? "primary" : "action"}
+                  />
+                  <Typography variant="body1" sx={{ fontWeight: 600 }}>
+                    No samples in <code>samplesheet.csv</code> yet
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 500 }}>
+                    Drag and drop a <code>samplesheet.csv</code> file here (or click to browse), or
+                    use &ldquo;+ Add Sample&rdquo; above.
+                  </Typography>
+                </Stack>
+              </Paper>
             </Box>
           ) : (
-            <TableContainer>
-              <Table size="small">
+            <TableContainer sx={{ maxHeight: "calc(100vh - 320px)", minHeight: 300 }}>
+              <Table size="small" stickyHeader>
                 <TableHead>
                   <TableRow>
                     <TableCell>Sample ID (BAM stem)</TableCell>
@@ -319,130 +581,139 @@ export const SamplesheetPage: React.FC<SamplesheetPageProps> = ({
                     <TableCell>Target</TableCell>
                     <TableCell width={160}>Peak Mode</TableCell>
                     <TableCell width={100}>Replicate</TableCell>
-                    <TableCell>Control ID (IgG)</TableCell>
+                    <TableCell width={220}>Control ID (IgG)</TableCell>
                     <TableCell align="right" width={96}>
                       Actions
                     </TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
-                  {rows.map((row, idx) => (
-                    <TableRow key={idx} hover>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          value={row.sample_id}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "sample_id", e.target.value)
-                          }
-                          placeholder="L9254-0001_S141_L004"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          value={row.sample_name}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "sample_name", e.target.value)
-                          }
-                          placeholder="EV_INT_H3K4me3"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          value={row.condition}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "condition", e.target.value)
-                          }
-                          placeholder="EV_INT_H3K4me3"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          value={row.target}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "target", e.target.value)
-                          }
-                          placeholder="H3K4me3 / H3K27me3 / IgG"
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          select
-                          size="small"
-                          fullWidth
-                          value={row.peak_mode}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "peak_mode", e.target.value)
-                          }
-                        >
-                          <MenuItem value="narrow">narrow</MenuItem>
-                          <MenuItem value="broad">broad</MenuItem>
-                          <MenuItem value="">(Control / IgG)</MenuItem>
-                        </TextField>
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          value={row.replicate}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "replicate", e.target.value)
-                          }
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <TextField
-                          size="small"
-                          fullWidth
-                          value={row.control_id}
-                          onChange={(e) =>
-                            handleUpdateRow(idx, "control_id", e.target.value)
-                          }
-                          placeholder="Optional IgG sample_id"
-                          slotProps={{
-                            htmlInput: { list: "igg-samples-datalist" },
-                          }}
-                        />
-                      </TableCell>
-                      <TableCell align="right">
-                        <Stack direction="row" spacing={0.5} justifyContent="flex-end">
-                          <Tooltip title="Duplicate row">
-                            <IconButton
-                              size="small"
-                              onClick={() => handleDuplicateRow(idx)}
-                            >
-                              <ContentCopyIcon fontSize="small" />
-                            </IconButton>
+                  {indexedFilteredRows.map(({ row, index, rowKey }) => {
+                    const err = rowErrors[index];
+                    return (
+                      <TableRow key={rowKey} hover>
+                        <TableCell>
+                          <Tooltip title={err?.sampleIdError ?? ""} arrow>
+                            <TextField
+                              variant="standard"
+                              fullWidth
+                              error={Boolean(err?.sampleIdError)}
+                              value={row.sample_id}
+                              onChange={(e) =>
+                                handleUpdateRow(index, "sample_id", e.target.value)
+                              }
+                              placeholder="L9254-0001_S141_L004"
+                            />
                           </Tooltip>
-                          <Tooltip title="Delete row">
-                            <IconButton
-                              size="small"
-                              color="error"
-                              onClick={() => handleDeleteRow(idx)}
-                            >
-                              <DeleteOutlineIcon fontSize="small" />
-                            </IconButton>
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            variant="standard"
+                            fullWidth
+                            value={row.sample_name}
+                            onChange={(e) =>
+                              handleUpdateRow(index, "sample_name", e.target.value)
+                            }
+                            placeholder="EV_INT_H3K4me3"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            variant="standard"
+                            fullWidth
+                            value={row.condition}
+                            onChange={(e) =>
+                              handleUpdateRow(index, "condition", e.target.value)
+                            }
+                            placeholder="EV_INT_H3K4me3"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            variant="standard"
+                            fullWidth
+                            value={row.target}
+                            onChange={(e) =>
+                              handleUpdateRow(index, "target", e.target.value)
+                            }
+                            placeholder="H3K4me3 / H3K27me3 / IgG"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            select
+                            variant="standard"
+                            fullWidth
+                            value={row.peak_mode}
+                            onChange={(e) =>
+                              handleUpdateRow(index, "peak_mode", e.target.value)
+                            }
+                          >
+                            <MenuItem value="narrow">narrow</MenuItem>
+                            <MenuItem value="broad">broad</MenuItem>
+                            <MenuItem value="">(Control / IgG)</MenuItem>
+                          </TextField>
+                        </TableCell>
+                        <TableCell>
+                          <TextField
+                            variant="standard"
+                            fullWidth
+                            value={row.replicate}
+                            onChange={(e) =>
+                              handleUpdateRow(index, "replicate", e.target.value)
+                            }
+                          />
+                        </TableCell>
+                        <TableCell>
+                          <Tooltip title={err?.controlIdError ?? ""} arrow>
+                            <Autocomplete
+                              freeSolo
+                              options={iggSampleIds}
+                              value={row.control_id}
+                              onInputChange={(_, newValue) =>
+                                handleUpdateRow(index, "control_id", newValue)
+                              }
+                              renderInput={(params) => (
+                                <TextField
+                                  {...params}
+                                  variant="standard"
+                                  error={Boolean(err?.controlIdError)}
+                                  placeholder="Optional IgG sample_id"
+                                />
+                              )}
+                            />
                           </Tooltip>
-                        </Stack>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                        </TableCell>
+                        <TableCell align="right">
+                          <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                            <Tooltip title="Duplicate row">
+                              <IconButton
+                                size="small"
+                                aria-label={`Duplicate sample row ${index + 1}`}
+                                onClick={() => handleDuplicateRow(index)}
+                              >
+                                <ContentCopyIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                            <Tooltip title="Delete row">
+                              <IconButton
+                                size="small"
+                                color="error"
+                                aria-label={`Delete sample row ${index + 1}`}
+                                onClick={() => handleDeleteRow(index)}
+                              >
+                                <DeleteOutlineIcon fontSize="small" />
+                              </IconButton>
+                            </Tooltip>
+                          </Stack>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </TableContainer>
           )}
-          <datalist id="igg-samples-datalist">
-            {iggSampleIds.map((id) => (
-              <option key={id} value={id} />
-            ))}
-          </datalist>
         </CardContent>
       </Card>
     </Stack>

@@ -44,20 +44,20 @@ class InputDirectoryCheck:
 class BamFilesCheck:
     def run(self, ctx: PreflightContext) -> PreflightCheckResult:
         bam_files = (
-            list(ctx.input_dir.glob("06_index_bam/*.bam"))
+            list(ctx.input_dir.glob("08_deeptools/bam_index/*.bam"))
             if ctx.config.input_dir and ctx.input_dir.exists()
             else []
         )
         if bam_files:
             return PreflightCheckResult(
-                name="Input BAMs (06_index_bam)",
+                name="Input BAMs (08_deeptools)",
                 status="ok",
                 detail=f"Found {len(bam_files)} BAM file(s)",
             )
         return PreflightCheckResult(
-            name="Input BAMs (06_index_bam)",
+            name="Input BAMs (08_deeptools)",
             status="warning",
-            detail="No BAM files found in 06_index_bam/",
+            detail="No BAM files found in 08_deeptools/",
         )
 
 

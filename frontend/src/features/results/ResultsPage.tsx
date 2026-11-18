@@ -11,10 +11,13 @@ import {
   Divider,
   Grid2 as Grid,
   IconButton,
+  InputAdornment,
   List,
   ListItemButton,
+  ListItemIcon,
   ListItemText,
   Paper,
+  Skeleton,
   Stack,
   Tab,
   Tabs,
@@ -28,8 +31,19 @@ import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import DownloadIcon from "@mui/icons-material/Download";
 import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import SearchIcon from "@mui/icons-material/Search";
+import CloseIcon from "@mui/icons-material/Close";
+import ImageOutlinedIcon from "@mui/icons-material/ImageOutlined";
+import PictureAsPdfOutlinedIcon from "@mui/icons-material/PictureAsPdfOutlined";
+import HtmlOutlinedIcon from "@mui/icons-material/HtmlOutlined";
+import DescriptionOutlinedIcon from "@mui/icons-material/DescriptionOutlined";
+import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import { api } from "../../api/client";
 import type { ResultFileItem } from "../../types/api";
+import { CodeViewer } from "../../components/common/CodeSurface";
+import { ConfirmDialog } from "../../components/common/ConfirmDialog";
+import { EmptyState } from "../../components/common/EmptyState";
+import { PageHeader } from "../../components/common/PageHeader";
 
 export interface ResultsPageProps {
   projectPath: string;
@@ -46,10 +60,27 @@ const CATEGORIES = [
   { id: "09_peaks", label: "Called Peaks" },
 ];
 
-function formatBytes(bytes: number): string {
+export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+function renderFileTypeIcon(filename: string): React.ReactNode {
+  const ext = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (["png", "svg", "jpg", "jpeg"].includes(ext)) {
+    return <ImageOutlinedIcon fontSize="small" color="primary" />;
+  }
+  if (ext === "pdf") {
+    return <PictureAsPdfOutlinedIcon fontSize="small" color="error" />;
+  }
+  if (ext === "html") {
+    return <HtmlOutlinedIcon fontSize="small" color="secondary" />;
+  }
+  if (["txt", "tsv", "csv", "bed", "narrowpeak", "broadpeak", "md"].includes(ext)) {
+    return <DescriptionOutlinedIcon fontSize="small" color="action" />;
+  }
+  return <InsertDriveFileOutlinedIcon fontSize="small" color="action" />;
 }
 
 export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify }) => {
@@ -63,21 +94,22 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
   const [textPreview, setTextPreview] = useState<string>("");
   const [loadingPreview, setLoadingPreview] = useState<boolean>(false);
 
-  const loadFiles = async () => {
+  const [fileToDelete, setFileToDelete] = useState<ResultFileItem | null>(null);
+  const [deleting, setDeleting] = useState<boolean>(false);
+
+  const loadFiles = async (resetSelection = false) => {
     setLoading(true);
     try {
       const res = await api.getResultsFiles();
       setFiles(res.files);
       setResultsDir(res.results_dir);
       setExists(res.exists);
-      if (res.files.length > 0 && !selectedFile) {
-        setSelectedFile(res.files[0]);
-      } else if (
-        selectedFile &&
-        !res.files.some((f) => f.path === selectedFile.path)
-      ) {
-        setSelectedFile(res.files[0] ?? null);
-      }
+      setSelectedFile((prev) => {
+        if (resetSelection || !prev) {
+          return res.files[0] ?? null;
+        }
+        return res.files.some((f) => f.path === prev.path) ? prev : (res.files[0] ?? null);
+      });
     } catch (err) {
       onNotify(err instanceof Error ? err.message : "Failed to load results", "error");
     } finally {
@@ -86,8 +118,22 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
   };
 
   useEffect(() => {
-    void loadFiles();
+    setSelectedFile(null);
+    setCategory("all");
+    setSearch("");
+    void loadFiles(true);
   }, [projectPath]);
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: files.length };
+    for (const cat of CATEGORIES) {
+      if (cat.id !== "all") counts[cat.id] = 0;
+    }
+    for (const f of files) {
+      counts[f.category] = (counts[f.category] ?? 0) + 1;
+    }
+    return counts;
+  }, [files]);
 
   const filteredFiles = useMemo(() => {
     return files.filter((file) => {
@@ -166,14 +212,19 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
     }
   };
 
-  const handleDeleteFile = async (item: ResultFileItem) => {
-    if (!window.confirm(`Delete output file "${item.path}"?`)) return;
+  const handleConfirmDeleteFile = async () => {
+    if (!fileToDelete) return;
+    setDeleting(true);
     try {
-      await api.deleteResultFile(item.path);
-      onNotify(`Deleted ${item.name}`, "info");
-      await loadFiles();
+      await api.deleteResultFile(fileToDelete.path);
+      const deletedName = fileToDelete.name;
+      setFileToDelete(null);
+      onNotify(`Deleted ${deletedName}`, "info");
+      await loadFiles(false);
     } catch (err) {
       onNotify(err instanceof Error ? err.message : "Failed to delete file", "error");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -182,56 +233,55 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
     : "";
   const selectedExt = selectedFile?.name.split(".").pop()?.toLowerCase() ?? "";
 
+  const splitPaneHeight = { xs: "auto", md: "calc(100vh - 300px)" };
+
   return (
     <Stack spacing={3}>
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 2,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: 2,
-        }}
-      >
-        <Box>
-          <Stack direction="row" spacing={1.5} alignItems="center">
-            <Typography variant="h6">Results &amp; QC Browser</Typography>
-            <Chip label={`${files.length} files`} size="small" color="primary" variant="outlined" />
-          </Stack>
-          <Typography variant="caption" color="text.secondary">
+      <PageHeader
+        title="Results & QC Browser"
+        badges={
+          <Chip
+            label={`${files.length} file${files.length === 1 ? "" : "s"}`}
+            size="small"
+            color="primary"
+            variant="outlined"
+          />
+        }
+        subtitle={
+          <>
             Directory: <code>{resultsDir || `${projectPath}/results`}</code>
-          </Typography>
-        </Box>
-        <Stack direction="row" spacing={1.5}>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<ContentCopyIcon />}
-            disabled={!resultsDir}
-            onClick={() => void handleCopyPath()}
-          >
-            Copy Path
-          </Button>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<RefreshIcon />}
-            onClick={() => void loadFiles()}
-          >
-            Refresh
-          </Button>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<FolderOpenIcon />}
-            onClick={() => void handleOpenFinder()}
-          >
-            Open in Finder
-          </Button>
-        </Stack>
-      </Paper>
+          </>
+        }
+        actions={
+          <>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<ContentCopyIcon />}
+              disabled={!resultsDir}
+              onClick={() => void handleCopyPath()}
+            >
+              Copy Path
+            </Button>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={<RefreshIcon />}
+              onClick={() => void loadFiles(false)}
+            >
+              Refresh
+            </Button>
+            <Button
+              variant="contained"
+              size="small"
+              startIcon={<FolderOpenIcon />}
+              onClick={() => void handleOpenFinder()}
+            >
+              Open in Finder
+            </Button>
+          </>
+        }
+      />
 
       <Paper variant="outlined" sx={{ px: 2 }}>
         <Tabs
@@ -239,17 +289,41 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
           onChange={(_, v: string) => setCategory(v)}
           variant="scrollable"
           scrollButtons="auto"
+          aria-label="Result output categories"
         >
-          {CATEGORIES.map((cat) => (
-            <Tab key={cat.id} value={cat.id} label={cat.label} />
-          ))}
+          {CATEGORIES.map((cat) => {
+            const count = categoryCounts[cat.id] ?? 0;
+            return (
+              <Tab
+                key={cat.id}
+                value={cat.id}
+                label={
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <span>{cat.label}</span>
+                    <Chip
+                      label={count}
+                      size="small"
+                      color={category === cat.id ? "primary" : "default"}
+                      variant={category === cat.id ? "filled" : "outlined"}
+                      sx={{ height: 20, fontSize: "0.72rem", fontVariantNumeric: "tabular-nums" }}
+                    />
+                  </Stack>
+                }
+              />
+            );
+          })}
         </Tabs>
       </Paper>
 
       {loading ? (
-        <Stack alignItems="center" justifyContent="center" sx={{ py: 8 }}>
-          <CircularProgress />
-        </Stack>
+        <Grid container spacing={2.5}>
+          <Grid size={{ xs: 12, md: 4 }}>
+            <Skeleton variant="rounded" height={520} />
+          </Grid>
+          <Grid size={{ xs: 12, md: 8 }}>
+            <Skeleton variant="rounded" height={520} />
+          </Grid>
+        </Grid>
       ) : !exists || files.length === 0 ? (
         <Alert severity="info">
           No output files found in <code>{resultsDir || "results/"}</code> yet. Run the Nextflow
@@ -259,60 +333,114 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
         <Grid container spacing={2.5}>
           {/* Left File List */}
           <Grid size={{ xs: 12, md: 4 }}>
-            <Card variant="outlined" sx={{ height: 640, display: "flex", flexDirection: "column" }}>
+            <Card
+              sx={{
+                height: splitPaneHeight,
+                minHeight: 460,
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
               <Box sx={{ p: 1.5 }}>
                 <TextField
-                  size="small"
                   fullWidth
                   placeholder="Search output files..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
+                  slotProps={{
+                    input: {
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchIcon fontSize="small" color="action" />
+                        </InputAdornment>
+                      ),
+                      endAdornment: search ? (
+                        <InputAdornment position="end">
+                          <IconButton
+                            size="small"
+                            aria-label="Clear file search"
+                            onClick={() => setSearch("")}
+                          >
+                            <CloseIcon fontSize="small" />
+                          </IconButton>
+                        </InputAdornment>
+                      ) : undefined,
+                    },
+                  }}
                 />
               </Box>
               <Divider />
               <Box sx={{ flexGrow: 1, overflowY: "auto" }}>
-                <List dense disablePadding>
-                  {filteredFiles.map((item) => {
-                    const isSelected = selectedFile?.path === item.path;
-                    return (
-                      <React.Fragment key={item.path}>
-                        <ListItemButton
-                          selected={isSelected}
-                          onClick={() => setSelectedFile(item)}
-                        >
-                          <ListItemText
-                            primary={item.name}
-                            secondary={`${item.subfolder || item.category} • ${formatBytes(item.size)}`}
-                            primaryTypographyProps={{
-                              noWrap: true,
-                              fontWeight: isSelected ? 600 : 400,
-                            }}
-                            secondaryTypographyProps={{ noWrap: true }}
-                          />
-                        </ListItemButton>
-                        <Divider component="li" />
-                      </React.Fragment>
-                    );
-                  })}
-                </List>
+                {filteredFiles.length === 0 ? (
+                  <EmptyState
+                    title="No files in this category"
+                    description={
+                      search.trim()
+                        ? `No files matching "${search}"`
+                        : "Select another category tab above."
+                    }
+                  />
+                ) : (
+                  <List dense disablePadding>
+                    {filteredFiles.map((item) => {
+                      const isSelected = selectedFile?.path === item.path;
+                      return (
+                        <React.Fragment key={item.path}>
+                          <ListItemButton
+                            selected={isSelected}
+                            onClick={() => setSelectedFile(item)}
+                          >
+                            <ListItemIcon sx={{ minWidth: 32 }}>
+                              {renderFileTypeIcon(item.name)}
+                            </ListItemIcon>
+                            <ListItemText
+                              primary={item.name}
+                              secondary={`${item.subfolder || item.category} • ${formatBytes(item.size)}`}
+                              primaryTypographyProps={{
+                                noWrap: true,
+                                fontWeight: isSelected ? 600 : 400,
+                              }}
+                              secondaryTypographyProps={{ noWrap: true }}
+                            />
+                          </ListItemButton>
+                          <Divider component="li" />
+                        </React.Fragment>
+                      );
+                    })}
+                  </List>
+                )}
               </Box>
             </Card>
           </Grid>
 
           {/* Right Preview Pane */}
           <Grid size={{ xs: 12, md: 8 }}>
-            <Card variant="outlined" sx={{ height: 640, display: "flex", flexDirection: "column" }}>
+            <Card
+              sx={{
+                height: splitPaneHeight,
+                minHeight: 460,
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
               {selectedFile ? (
                 <>
                   <CardHeader
+                    sx={{ "& .MuiCardHeader-content": { minWidth: 0 } }}
                     title={
-                      <Typography variant="subtitle1" noWrap>
-                        {selectedFile.name}
+                      <Tooltip title={selectedFile.name} placement="top-start">
+                        <Typography variant="subtitle1" noWrap>
+                          {selectedFile.name}
+                        </Typography>
+                      </Tooltip>
+                    }
+                    subheader={
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: "block" }}>
+                        {selectedFile.path} ({formatBytes(selectedFile.size)})
                       </Typography>
                     }
-                    subheader={`${selectedFile.path} (${formatBytes(selectedFile.size)})`}
                     action={
-                      <Stack direction="row" spacing={1}>
+                      <Stack direction="row" spacing={1} sx={{ flexShrink: 0, ml: 1 }}>
                         <Button
                           size="small"
                           variant="outlined"
@@ -338,7 +466,8 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
                           <IconButton
                             size="small"
                             color="error"
-                            onClick={() => void handleDeleteFile(selectedFile)}
+                            aria-label={`Delete file ${selectedFile.name}`}
+                            onClick={() => setFileToDelete(selectedFile)}
                           >
                             <DeleteOutlineIcon fontSize="small" />
                           </IconButton>
@@ -354,7 +483,7 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
-                      bgcolor: "#f8fafc",
+                      bgcolor: "background.default",
                       p: 2,
                     }}
                   >
@@ -369,7 +498,7 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
                           objectFit: "contain",
                           borderRadius: 1,
                           boxShadow: 1,
-                          bgcolor: "#fff",
+                          bgcolor: "background.paper",
                         }}
                       />
                     ) : ["pdf", "html"].includes(selectedExt) ? (
@@ -381,44 +510,51 @@ export const ResultsPage: React.FC<ResultsPageProps> = ({ projectPath, onNotify 
                           width: "100%",
                           height: "100%",
                           border: "none",
-                          bgcolor: "#fff",
+                          bgcolor: "background.paper",
                           borderRadius: 1,
                         }}
                       />
                     ) : loadingPreview ? (
                       <CircularProgress size={28} />
                     ) : (
-                      <Box
-                        component="pre"
-                        sx={{
-                          m: 0,
-                          p: 2,
-                          width: "100%",
-                          height: "100%",
-                          overflow: "auto",
-                          bgcolor: "#0f172a",
-                          color: "#e2e8f0",
-                          fontFamily: '"JetBrains Mono", monospace',
-                          fontSize: "0.78rem",
-                          borderRadius: 1,
-                        }}
+                      <CodeViewer
+                        sx={{ width: "100%", height: "100%", borderRadius: 1 }}
                       >
                         {textPreview || "Preview not available for this file type."}
-                      </Box>
+                      </CodeViewer>
                     )}
                   </CardContent>
                 </>
               ) : (
-                <Stack alignItems="center" justifyContent="center" sx={{ height: "100%" }}>
-                  <Typography variant="body2" color="text.secondary">
-                    Select a file from the left panel to preview it.
-                  </Typography>
-                </Stack>
+                <EmptyState
+                  title="No file selected"
+                  description="Select a file from the left panel to preview it."
+                  sx={{ height: "100%" }}
+                />
               )}
             </Card>
           </Grid>
         </Grid>
       )}
+
+      <ConfirmDialog
+        open={fileToDelete !== null}
+        title="Delete Output File?"
+        message={
+          fileToDelete ? (
+            <>
+              Permanently delete output file <code>{fileToDelete.path}</code>?
+            </>
+          ) : (
+            ""
+          )
+        }
+        confirmLabel="Delete File"
+        confirmColor="error"
+        busy={deleting}
+        onConfirm={() => void handleConfirmDeleteFile()}
+        onCancel={() => setFileToDelete(null)}
+      />
     </Stack>
   );
 };

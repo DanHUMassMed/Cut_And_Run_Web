@@ -1,5 +1,16 @@
 import { createTheme } from "@mui/material/styles";
 
+export const MONOSPACE_FONT_FAMILY =
+  '"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+
+export const CODE_SURFACE_TOKENS = {
+  background: "#0f172a",
+  foreground: "#f8fafc",
+  mutedForeground: "#e2e8f0",
+  inlineBackground: "#f1f5f9",
+  inlineBorder: "#e2e8f0",
+} as const;
+
 export const appTheme = createTheme({
   palette: {
     mode: "light",
@@ -17,6 +28,7 @@ export const appTheme = createTheme({
       default: "#f8fafc",
       paper: "#ffffff",
     },
+    divider: "#e2e8f0",
     success: {
       main: "#1e8e3e",
     },
@@ -49,6 +61,36 @@ export const appTheme = createTheme({
     borderRadius: 10,
   },
   components: {
+    MuiCssBaseline: {
+      styleOverrides: {
+        code: {
+          fontFamily: MONOSPACE_FONT_FAMILY,
+          fontSize: "0.84em",
+          backgroundColor: CODE_SURFACE_TOKENS.inlineBackground,
+          border: `1px solid ${CODE_SURFACE_TOKENS.inlineBorder}`,
+          borderRadius: 4,
+          padding: "1px 5px",
+        },
+        "pre code": {
+          backgroundColor: "transparent",
+          border: "none",
+          padding: 0,
+          fontSize: "inherit",
+        },
+      },
+    },
+    MuiAppBar: {
+      defaultProps: {
+        elevation: 0,
+        color: "default",
+      },
+      styleOverrides: {
+        root: ({ theme }) => ({
+          backgroundColor: theme.palette.background.paper,
+          borderBottom: `1px solid ${theme.palette.divider}`,
+        }),
+      },
+    },
     MuiButton: {
       defaultProps: {
         disableElevation: true,
@@ -60,19 +102,47 @@ export const appTheme = createTheme({
         },
       },
     },
+    MuiTextField: {
+      defaultProps: {
+        size: "small",
+        variant: "outlined",
+      },
+    },
+    MuiCard: {
+      defaultProps: {
+        variant: "outlined",
+      },
+    },
     MuiPaper: {
       styleOverrides: {
-        outlined: {
-          borderColor: "#e2e8f0",
+        outlined: ({ theme }) => ({
+          borderColor: theme.palette.divider,
+        }),
+      },
+    },
+    MuiTab: {
+      styleOverrides: {
+        root: {
+          textTransform: "none",
+          fontWeight: 600,
+          minHeight: 48,
         },
       },
     },
     MuiTableCell: {
       styleOverrides: {
-        head: {
+        head: ({ theme }) => ({
           fontWeight: 600,
-          backgroundColor: "#f1f5f9",
-          color: "#334155",
+          backgroundColor: theme.palette.grey[100],
+          color: theme.palette.text.primary,
+        }),
+      },
+    },
+    MuiDialogTitle: {
+      styleOverrides: {
+        root: {
+          fontWeight: 600,
+          fontSize: "1.125rem",
         },
       },
     },

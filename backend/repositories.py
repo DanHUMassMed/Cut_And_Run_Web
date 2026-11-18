@@ -30,15 +30,15 @@ class ConfigRepository(Protocol):
     def load(self) -> tuple[ExperimentConfigModel, str]: ...
     def save(self, model: ExperimentConfigModel) -> None: ...
     def update_contrasts(self, contrasts: list[ContrastModel]) -> ExperimentConfigModel: ...
+    def get_bigwig_tools(self) -> dict[str, str]: ...
 
 
 class SamplesheetRepository(Protocol):
-    """Persistence and discovery contract for samplesheet rows."""
+    """Persistence contract for samplesheet rows."""
 
     def exists(self) -> bool: ...
     def load(self) -> list[dict[str, str]]: ...
     def save(self, rows: list[dict[str, Any]]) -> int: ...
-    def discover_bams(self, input_dir: Path) -> list[str]: ...
 
 
 class RunScriptRepository(Protocol):
@@ -63,9 +63,13 @@ class FileConfigRepository:
 
     def __init__(self, settings: WorkspaceSettings) -> None:
         self._settings = settings
+        self._settings.load_bigwig_tools()
 
     def exists(self) -> bool:
         return self._settings.config_path.exists()
+
+    def get_bigwig_tools(self) -> dict[str, str]:
+        return self._settings.load_bigwig_tools()
 
     def load(self) -> tuple[ExperimentConfigModel, str]:
         path = self._settings.config_path
@@ -75,12 +79,18 @@ class FileConfigRepository:
         return parse_experiment_config(raw), raw
 
     def save(self, model: ExperimentConfigModel) -> None:
+        tools_map = self.get_bigwig_tools()
+        resolved_dir = tools_map.get(model.active_bigwig_dir, model.active_bigwig_dir)
+        resolved_source = "deepTools" if resolved_dir == tools_map.get("deepTools") or "deeptools" in resolved_dir.lower() else "UCSC"
+        normalized_model = model.model_copy(
+            update={"active_bigwig_dir": resolved_dir, "bigwig_source": resolved_source}
+        )
         path = self._settings.config_path
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             bak_path = path.with_suffix(".config.bak")
             bak_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-        path.write_text(serialize_experiment_config(model), encoding="utf-8")
+        path.write_text(serialize_experiment_config(normalized_model), encoding="utf-8")
 
     def update_contrasts(self, contrasts: list[ContrastModel]) -> ExperimentConfigModel:
         model, _ = self.load()
@@ -120,12 +130,6 @@ class FileSamplesheetRepository:
                 cleaned = {key: row.get(key, "") for key in SAMPLESHEET_FIELDNAMES}
                 writer.writerow(cleaned)
         return len(rows)
-
-    def discover_bams(self, input_dir: Path) -> list[str]:
-        bam_dir = input_dir / "06_index_bam"
-        if not bam_dir.exists():
-            raise FileNotFoundError(f"Path not found: {bam_dir}")
-        return [p.stem for p in sorted(bam_dir.glob("*.bam"))]
 
 
 class FileRunScriptRepository:

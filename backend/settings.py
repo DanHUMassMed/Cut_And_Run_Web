@@ -7,6 +7,11 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_BIGWIG_TOOLS: dict[str, str] = {
+    "HOMER": "07_homer/ucsc_bw",
+    "deepTools": "08_deeptools/bw",
+}
+
 
 def _default_user_config_dir() -> Path:
     override = (
@@ -122,3 +127,31 @@ class WorkspaceSettings:
     @property
     def templates_dir(self) -> Path:
         return self.user_config_dir / "templates"
+
+    @property
+    def bigwig_tools_path(self) -> Path:
+        return self.user_config_dir / "bigwig_tools.json"
+
+    def load_bigwig_tools(self) -> dict[str, str]:
+        """Load tool-to-BigWig-subdirectory mapping from ~/.config/cutandrun_web/bigwig_tools.json, seeding defaults if absent."""
+        path = self.bigwig_tools_path
+        if not path.exists():
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(DEFAULT_BIGWIG_TOOLS, indent=2) + "\n", encoding="utf-8")
+            except OSError:
+                return dict(DEFAULT_BIGWIG_TOOLS)
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return dict(DEFAULT_BIGWIG_TOOLS)
+
+        if not isinstance(payload, dict):
+            return dict(DEFAULT_BIGWIG_TOOLS)
+
+        merged = dict(DEFAULT_BIGWIG_TOOLS)
+        for key, value in payload.items():
+            if isinstance(key, str) and isinstance(value, str) and key.strip() and value.strip():
+                merged[key.strip()] = value.strip()
+        return merged

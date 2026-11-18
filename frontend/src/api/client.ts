@@ -2,8 +2,8 @@ import type {
   ConfigResponse,
   ContrastItem,
   DirectoryListingResponse,
-  DiscoverSamplesResponse,
   ExperimentConfig,
+  NativeDirectoryPickResponse,
   PipelineStatusResponse,
   PreflightResponse,
   ProjectCreatePayload,
@@ -87,6 +87,21 @@ export const api = {
     return requestJson<DirectoryListingResponse>(`/api/projects/list-dirs${query}`);
   },
 
+  createDirectory: (parent_dir: string, name: string): Promise<DirectoryListingResponse> =>
+    requestJson<DirectoryListingResponse>("/api/projects/mkdir", {
+      method: "POST",
+      body: JSON.stringify({ parent_dir, name }),
+    }),
+
+  pickNativeDirectory: (
+    prompt = "Select Directory",
+    initial_path?: string
+  ): Promise<NativeDirectoryPickResponse> =>
+    requestJson<NativeDirectoryPickResponse>("/api/projects/pick-native-dir", {
+      method: "POST",
+      body: JSON.stringify({ prompt, initial_path }),
+    }),
+
   // Templates (~/.config/cutandrun_web/templates)
   listTemplates: async (): Promise<TemplateMetadata[]> => {
     const res = await requestJson<{ templates: TemplateMetadata[] }>("/api/templates");
@@ -96,6 +111,17 @@ export const api = {
   getTemplate: async (templateId: string): Promise<TemplateDetail> => {
     const res = await requestJson<{ template: TemplateDetail }>(
       `/api/templates/${encodeURIComponent(templateId)}`
+    );
+    return res.template;
+  },
+
+  saveTemplate: async (payload: TemplateSavePayload): Promise<TemplateDetail> => {
+    const res = await requestJson<{ status: string; template: TemplateDetail }>(
+      "/api/templates",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
     );
     return res.template;
   },
@@ -134,6 +160,11 @@ export const api = {
       body: JSON.stringify({ diff_contrasts }),
     }),
 
+  revealConfigInFinder: (): Promise<{ status: string; path: string }> =>
+    requestJson<{ status: string; path: string }>("/api/config/reveal-finder", {
+      method: "POST",
+    }),
+
   // Samplesheet
   getSamplesheet: (): Promise<SamplesheetResponse> =>
     requestJson<SamplesheetResponse>("/api/samplesheet"),
@@ -142,11 +173,6 @@ export const api = {
     requestJson<{ status: string; count: number }>("/api/samplesheet", {
       method: "PUT",
       body: JSON.stringify({ rows }),
-    }),
-
-  discoverSamples: (): Promise<DiscoverSamplesResponse> =>
-    requestJson<DiscoverSamplesResponse>("/api/samplesheet/discover", {
-      method: "POST",
     }),
 
   // run.sh

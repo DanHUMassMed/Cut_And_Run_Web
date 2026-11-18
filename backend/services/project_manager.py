@@ -279,14 +279,46 @@ class WorkspaceService:
             permission_error = f"Permission denied reading contents of {target}"
 
         parent_path = str(target.parent) if target.parent != target else None
+        home_dir = Path.home().resolve()
+        pipeline_parent = self._settings.pipeline_dir.parent.resolve()
+        shortcuts: list[dict[str, str]] = [
+            {"label": "Projects Root", "path": str(pipeline_parent), "icon": "science"},
+            {"label": "Home", "path": str(home_dir), "icon": "home"},
+        ]
+        for folder_name, icon_key in (
+            ("Desktop", "desktop"),
+            ("Documents", "documents"),
+            ("Downloads", "downloads"),
+        ):
+            candidate = home_dir / folder_name
+            if candidate.is_dir():
+                shortcuts.append({"label": folder_name, "path": str(candidate), "icon": icon_key})
+
         return {
             "current": str(target),
             "parent": parent_path,
-            "home": str(Path.home().resolve()),
-            "pipeline_parent": str(self._settings.pipeline_dir.parent.resolve()),
+            "home": str(home_dir),
+            "pipeline_parent": str(pipeline_parent),
+            "shortcuts": shortcuts,
             "directories": directories,
             "error": permission_error,
         }
+
+    def create_directory(self, parent_dir: str, name: str) -> dict[str, Any]:
+        """Create a new subdirectory inside parent_dir and return the created path and parent listing."""
+        parent = Path(parent_dir).expanduser().resolve()
+        if not parent.exists():
+            raise FileNotFoundError(f"Parent directory does not exist: {parent}")
+        if not parent.is_dir():
+            raise ValueError(f"Parent path is not a directory: {parent}")
+
+        new_dir = (parent / name).resolve()
+        if new_dir.parent != parent:
+            raise ValueError("Invalid folder name")
+        new_dir.mkdir(parents=False, exist_ok=True)
+        listing = self.list_directories(str(parent))
+        listing["created"] = str(new_dir)
+        return listing
 
     def initialize_workspace(
         self,

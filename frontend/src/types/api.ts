@@ -81,6 +81,7 @@ export interface ExperimentConfig {
 export interface ConfigResponse {
   config: ExperimentConfig;
   raw: string;
+  bigwig_tools?: Record<string, string>;
 }
 
 export interface SamplesheetRow {
@@ -95,11 +96,6 @@ export interface SamplesheetRow {
 
 export interface SamplesheetResponse {
   rows: SamplesheetRow[];
-}
-
-export interface DiscoverSamplesResponse {
-  discovered: string[];
-  error?: string;
 }
 
 export interface RunScriptResponse {
@@ -136,13 +132,26 @@ export interface DirectoryEntry {
   has_run_sh: boolean;
 }
 
+export interface DirectoryShortcut {
+  label: string;
+  path: string;
+  icon: string;
+}
+
 export interface DirectoryListingResponse {
   current: string;
   parent: string | null;
   home: string;
   pipeline_parent: string;
+  shortcuts?: DirectoryShortcut[];
   directories: DirectoryEntry[];
   error: string | null;
+  created?: string;
+}
+
+export interface NativeDirectoryPickResponse {
+  cancelled: boolean;
+  path: string | null;
 }
 
 export interface TemplateMetadata {
